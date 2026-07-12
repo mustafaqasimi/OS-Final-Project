@@ -6,6 +6,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "vm.h"
+#include "pinfo.h"
 
 uint64
 sys_exit(void)
@@ -106,4 +107,84 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+uint64
+sys_getpinfo(void)
+{
+  uint64 user_addr;
+  int max;
+  struct proc *p;
+  struct proc *cur = myproc();
+  struct pinfo kbuf[NPROC];
+  int n = 0;
+  uint64 size;
+
+  argaddr(0, &user_addr);
+  argint(1, &max);
+  if (max <= 0 || max > NPROC)
+    return -1;
+
+  size = (uint64)max * sizeof(struct pinfo);
+  if (user_addr >= cur->sz || user_addr + size < user_addr ||
+      user_addr + size > cur->sz)
+    return -1;
+
+  for (p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if (p->state != UNUSED) {
+      if (n < max) {
+        kbuf[n].pid = p->pid;
+        kbuf[n].state = p->state;
+        kbuf[n].priority = p->priority;
+        kbuf[n].tickets = p->tickets;
+        n++;
+      }
+    }
+    release(&p->lock);
+  }
+
+  if (copyout(cur->pagetable, user_addr, (char *)kbuf,
+              n * sizeof(struct pinfo)) < 0)
+    return -1;
+  return n;
+}
+
+uint64
+sys_setpriority(void)
+{
+  int pid, priority;
+  struct proc *p;
+
+  argint(0, &pid);
+  argint(1, &priority);
+  if (priority < 0 || priority > 100)
+    return -1;
+
+  for (p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if (p->pid == pid && p->state != UNUSED) {
+      p->priority = priority;
+      release(&p->lock);
+      return 0;
+    }
+    release(&p->lock);
+  }
+  return -1;
+}
+
+uint64
+sys_settickets(void)
+{
+  int number;
+  struct proc *p = myproc();
+
+  argint(0, &number);
+  if (number <= 0)
+    return -1;
+
+  acquire(&p->lock);
+  p->tickets = number;
+  release(&p->lock);
+  return 0;
 }
