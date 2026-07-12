@@ -124,6 +124,8 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+  p->priority = 50;
+  p->tickets = 1;
 
   // Allocate a trapframe page.
   if ((p->trapframe = (struct trapframe *)kalloc()) == 0) {
@@ -168,6 +170,8 @@ freeproc(struct proc *p)
   p->chan = 0;
   p->killed = 0;
   p->xstate = 0;
+  p->priority = 50;
+  p->tickets = 1;
   p->state = UNUSED;
 }
 
@@ -289,6 +293,11 @@ kfork(void)
   np->cwd = idup(p->cwd);
 
   safestrcpy(np->name, p->name, sizeof(p->name));
+
+  acquire(&p->lock);
+  np->priority = p->priority;
+  np->tickets = p->tickets;
+  release(&p->lock);
 
   pid = np->pid;
 
@@ -421,6 +430,115 @@ kwait(uint64 addr)
 //  - swtch to start running that process.
 //  - eventually that process transfers control
 //    via swtch back to the scheduler.
+
+#if defined(SCHED_LOTTERY)
+static uint lcg_state;
+static int lcg_inited;
+
+static void
+randinit(void)
+{
+  if (!lcg_inited) {
+    acquire(&tickslock);
+    lcg_state = ticks ^ 0x9e3779b9;
+    release(&tickslock);
+    lcg_inited = 1;
+  }
+}
+
+static uint
+randnext(void)
+{
+  randinit();
+  lcg_state = lcg_state * 1664525 + 1013904223;
+  return lcg_state;
+}
+
+static int
+randint(int lo, int hi)
+{
+  return lo + (randnext() % (hi - lo + 1));
+}
+#endif
+
+#if defined(SCHED_PRIORITY)
+static int
+schedule_priority(struct cpu *c)
+{
+  struct proc *p;
+  int best_pri = 101;
+  int i, idx, start;
+
+  for (p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if (p->state == RUNNABLE && p->priority < best_pri)
+      best_pri = p->priority;
+    release(&p->lock);
+  }
+  if (best_pri == 101)
+    return 0;
+
+  start = c->sched_last;
+  for (i = 0; i < NPROC; i++) {
+    idx = (start + i) % NPROC;
+    p = &proc[idx];
+    acquire(&p->lock);
+    if (p->state == RUNNABLE && p->priority == best_pri) {
+      p->state = RUNNING;
+      c->proc = p;
+      c->sched_last = (idx + 1) % NPROC;
+      swtch(&c->context, &p->context);
+      c->proc = 0;
+      release(&p->lock);
+      return 1;
+    }
+    release(&p->lock);
+  }
+  return 0;
+}
+#endif
+
+#if defined(SCHED_LOTTERY)
+static int
+schedule_lottery(struct cpu *c)
+{
+  struct proc *p;
+  int total, win, cum;
+  int attempt;
+
+  for (attempt = 0; attempt < 5; attempt++) {
+    total = 0;
+    for (p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if (p->state == RUNNABLE)
+        total += p->tickets;
+      release(&p->lock);
+    }
+    if (total == 0)
+      return 0;
+
+    win = randint(1, total);
+    cum = 0;
+    for (p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if (p->state == RUNNABLE) {
+        cum += p->tickets;
+        if (win <= cum) {
+          p->state = RUNNING;
+          c->proc = p;
+          swtch(&c->context, &p->context);
+          c->proc = 0;
+          release(&p->lock);
+          return 1;
+        }
+      }
+      release(&p->lock);
+    }
+  }
+  return 0;
+}
+#endif
+
 void
 scheduler(void)
 {
@@ -438,6 +556,13 @@ scheduler(void)
     intr_off();
 
     int found = 0;
+#if defined(SCHED_PRIORITY)
+    if (schedule_priority(c))
+      found = 1;
+#elif defined(SCHED_LOTTERY)
+    if (schedule_lottery(c))
+      found = 1;
+#else
     for (p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
       if (p->state == RUNNABLE) {
@@ -455,6 +580,7 @@ scheduler(void)
       }
       release(&p->lock);
     }
+#endif
     if (found == 0) {
       // nothing to run; stop running on this core until an interrupt.
       asm volatile("wfi");
