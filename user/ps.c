@@ -37,7 +37,7 @@ main(int argc, char **argv)
 
   printf("PID   STATE       PRIORITY   TICKETS\n");
   for (i = 0; i < n; i++) {
-    printf("%d     %-10s  %d         %d\n",
+    printf("%d     %s          %d         %d\n",
            buf[i].pid, statestr(buf[i].state),
            buf[i].priority, buf[i].tickets);
   }

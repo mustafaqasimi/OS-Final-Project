@@ -542,7 +542,6 @@ schedule_lottery(struct cpu *c)
 void
 scheduler(void)
 {
-  struct proc *p;
   struct cpu *c = mycpu();
 
   c->proc = 0;
@@ -563,6 +562,7 @@ scheduler(void)
     if (schedule_lottery(c))
       found = 1;
 #else
+    struct proc *p;
     for (p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
       if (p->state == RUNNABLE) {

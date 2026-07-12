@@ -20,10 +20,11 @@ count_work(int tickets, char *fname)
       break;
   }
 
+  long n = count;
   fd = open(fname, O_CREATE | O_RDWR);
   if (fd < 0)
     exit(1);
-  write(fd, &count, sizeof(count));
+  write(fd, &n, sizeof(n));
   close(fd);
   exit(0);
 }

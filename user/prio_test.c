@@ -40,7 +40,6 @@ scenario_different_priorities(void)
   int pids[3];
   int priorities[] = {10, 50, 90};
   int i, who;
-  int order[3];
 
   printf("Scenario A: priorities 10, 50, 90\n");
 
@@ -72,7 +71,6 @@ scenario_different_priorities(void)
   close(pfd[1]);
   for (i = 0; i < 3; i++) {
     read(pfd[0], &who, sizeof(who));
-    order[i] = who;
     printf("finish order %d: process index %d (priority %d)\n",
            i + 1, who, priorities[who]);
   }
@@ -113,10 +111,11 @@ scenario_equal_priorities(void)
         if (now - start >= 100)
           break;
       }
+      long n = count;
       fd = open(names[i], O_CREATE | O_RDWR);
       if (fd < 0)
         exit(1);
-      write(fd, &count, sizeof(count));
+      write(fd, &n, sizeof(n));
       close(fd);
       exit(0);
     }
