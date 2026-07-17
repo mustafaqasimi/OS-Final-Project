@@ -34,9 +34,14 @@ OBJS = \
 # perhaps in /opt/riscv/bin
 #TOOLPREFIX = 
 
+# Optional local toolchain under .tools/ (not in git)
+TOOLS_BIN = $(CURDIR)/.tools/riscv/bin
+BUNDLED_QEMU = .tools/qemu-root/usr/bin/qemu-system-riscv64
+
 # Try to infer the correct TOOLPREFIX if not set
 ifndef TOOLPREFIX
-TOOLPREFIX := $(shell if riscv64-unknown-elf-objdump -i 2>&1 | grep 'elf64-big' >/dev/null 2>&1; \
+TOOLPREFIX := $(shell PATH="$(TOOLS_BIN):$$PATH"; \
+	if riscv64-unknown-elf-objdump -i 2>&1 | grep 'elf64-big' >/dev/null 2>&1; \
 	then echo 'riscv64-unknown-elf-'; \
 	elif riscv64-elf-objdump -i 2>&1 | grep 'elf64-big' >/dev/null 2>&1; \
 	then echo 'riscv64-elf-'; \
@@ -48,11 +53,24 @@ TOOLPREFIX := $(shell if riscv64-unknown-elf-objdump -i 2>&1 | grep 'elf64-big' 
 	then echo 'riscv64-unknown-linux-gnu-'; \
 	else echo "***" 1>&2; \
 	echo "*** Error: Couldn't find a riscv64 version of GCC/binutils." 1>&2; \
+	echo "*** Install gcc-riscv64-linux-gnu or place a toolchain in .tools/riscv/bin." 1>&2; \
 	echo "*** To turn off this error, run 'gmake TOOLPREFIX= ...'." 1>&2; \
 	echo "***" 1>&2; exit 1; fi)
 endif
 
-QEMU = qemu-system-riscv64
+ifndef QEMU
+QEMU := $(shell if command -v qemu-system-riscv64 >/dev/null 2>&1; then \
+	echo qemu-system-riscv64; \
+	elif [ -x $(BUNDLED_QEMU) ]; then echo $(BUNDLED_QEMU); \
+	else echo qemu-system-riscv64; fi)
+endif
+
+ifeq ($(QEMU),$(BUNDLED_QEMU))
+QEMU_ENV = LD_LIBRARY_PATH=$(CURDIR)/.tools/qemu-root/usr/lib/x86_64-linux-gnu:$(CURDIR)/.tools/qemu-root/usr/lib
+else
+QEMU_ENV =
+endif
+
 MIN_QEMU_VERSION = 7.2
 
 CC = $(TOOLPREFIX)gcc
@@ -175,7 +193,7 @@ clean:
 # try to generate a unique GDB port
 GDBPORT = $(shell expr `id -u` % 5000 + 25000)
 # QEMU's gdb stub command line changed in 0.11
-QEMUGDB = $(shell if $(QEMU) -help | grep -q '^-gdb'; \
+QEMUGDB = $(shell if $(QEMU_ENV) $(QEMU) -help 2>/dev/null | grep -q '^-gdb'; \
 	then echo "-gdb tcp::$(GDBPORT)"; \
 	else echo "-s -p $(GDBPORT)"; fi)
 ifndef CPUS
@@ -188,21 +206,27 @@ QEMUOPTS += -drive file=fs.img,if=none,format=raw,id=x0
 QEMUOPTS += -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
 
 qemu: check-qemu-version $K/kernel fs.img
-	$(QEMU) $(QEMUOPTS)
+	$(QEMU_ENV) $(QEMU) $(QEMUOPTS)
 
 .gdbinit: .gdbinit.tmpl-riscv
 	sed "s/:1234/:$(GDBPORT)/" < $^ > $@
 
 qemu-gdb: $K/kernel .gdbinit fs.img
 	@echo "*** Now run 'gdb' in another window." 1>&2
-	$(QEMU) $(QEMUOPTS) -S $(QEMUGDB)
+	$(QEMU_ENV) $(QEMU) $(QEMUOPTS) -S $(QEMUGDB)
 
 print-gdbport:
 	@echo $(GDBPORT)
 
-QEMU_VERSION := $(shell $(QEMU) --version | head -n 1 | sed -E 's/^QEMU emulator version ([0-9]+\.[0-9]+)\..*/\1/')
+QEMU_VERSION := $(shell $(QEMU_ENV) $(QEMU) --version 2>/dev/null | head -n 1 | sed -E 's/^QEMU emulator version ([0-9]+\.[0-9]+)\..*/\1/')
 check-qemu-version:
-	@if [ "$(shell echo "$(QEMU_VERSION) >= $(MIN_QEMU_VERSION)" | bc)" -eq 0 ]; then \
+	@if ! $(QEMU_ENV) $(QEMU) --version >/dev/null 2>&1; then \
+		echo "ERROR: qemu-system-riscv64 not found."; \
+		echo "Install: sudo apt install qemu-system-misc"; \
+		echo "Or ensure $(BUNDLED_QEMU) exists in the project directory."; \
+		exit 1; \
+	fi
+	@if [ "$(shell echo "$(QEMU_VERSION) >= $(MIN_QEMU_VERSION)" | bc 2>/dev/null)" -eq 0 ]; then \
 		echo "ERROR: Need qemu version >= $(MIN_QEMU_VERSION)"; \
 		exit 1; \
 	fi
